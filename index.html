@@ -320,8 +320,8 @@
                 <label for="infra-status-filter">Infra Status</label>
                 <select id="infra-status-filter">
                     <option value="">All Status</option>
-                    <option value="Infra Required">Infra Required</option>
-                    <option value="Infra Not Required">Infra Not Required</option>
+                    <option value="INFRA REQUIRED">Infra Required</option>
+                    <option value="INFRA NOT REQUIRED">Infra Not Required</option>
                 </select>
             </div>
             <div class="filter-group">
@@ -449,31 +449,34 @@
 
     <script>
         // GitHub Repository URL
-        const GITHUB_REPO_URL = "https://bu0965.github.io/Disconnection-List/";
+        const GITHUB_REPO_URL = "https://bu0965.github.io/Stagewise-PP/";
 
-        // Updated sections with numbering
-        const defaultSections = [
-            "01 - medha",
-            "02 - kudal", 
-            "03 - karhar",
-            "04 - anewadi",
-            "05 - Tapola"
-        ];
+        // Default sections
+        let defaultSections = [];
 
         // Data storage
-        let allDataRows = [];
-        let filteredDataRows = [];
-        let dbsLookupData = null;
         let processedData = null;
         let rawData = []; // Store raw data for filtering
+        let filteredData = null; // Store filtered data
+        let currentFilters = {
+            infraStatus: '',
+            category: '',
+            phase: '',
+            reportAge: ''
+        };
 
-        // Excel column mapping
+        // Excel column mapping for PP_DDMMYYYY.xlsx
+        // Note: XLSX uses 0-based indexing
+        // Column mappings based on your Excel file
         const excelColumnMapping = {
-            "Consumer No": 6,           // Column G (0-based index)
-            "Sub Category": 8,          // Column I
-            "Closing Balance": 13,      // Column N
-            "Age in Days": 15,          // Column P
-            "TD/PD Date": 18            // Column S
+            "Consumer No": 0,           // Column A
+            "Section": 2,               // Column C
+            "Category": 5,              // Column F
+            "Phase": 15,                // Column P
+            "Stage Tag": 8,             // Column I
+            "Stage Status": 9,          // Column J
+            "Infra Status": 33,         // Column AH (0-based: 33 = column AH in Excel)
+            "Report Age": 36            // Column AK (0-based: 36 = column AK in Excel)
         };
 
         // Initialize date dropdowns
@@ -536,7 +539,7 @@
             const year = document.getElementById('date-year').value;
 
             if (day && month && year) {
-                return `${day}-${month}-${year}`;
+                return `PP_${day}${month}${year}`;
             }
             return null;
         }
@@ -603,15 +606,22 @@
         }
 
         // Update status bar
-        function updateStatusBar() {
-            const rowCount = filteredDataRows.length > 0 ? filteredDataRows.length : allDataRows.length;
-            document.getElementById('total-rows-count').textContent = `${rowCount} rows`;
+        function updateStatusBar(isFiltered = false) {
+            const rowCount = rawData.length;
+            const filteredRowCount = filteredData ? 
+                Object.values(filteredData).reduce((sum, section) => sum + section.total, 0) : 0;
+            
+            if (isFiltered && filteredData) {
+                document.getElementById('total-rows-count').textContent = `${filteredRowCount} filtered rows`;
+            } else {
+                document.getElementById('total-rows-count').textContent = `${rowCount} rows`;
+            }
 
             const filterStatus = document.getElementById('import-status');
-            if (filteredDataRows.length > 0 && filteredDataRows.length < allDataRows.length) {
-                filterStatus.textContent = `${filteredDataRows.length} of ${allDataRows.length} rows after filtering`;
-            } else if (allDataRows.length > 0) {
-                filterStatus.textContent = `${allDataRows.length} rows loaded`;
+            if (isFiltered && filteredData) {
+                filterStatus.textContent = `Filtered: ${filteredRowCount} rows`;
+            } else if (rowCount > 0) {
+                filterStatus.textContent = `${rowCount} rows loaded`;
             } else {
                 filterStatus.textContent = 'Ready to generate abstract';
             }
@@ -642,101 +652,211 @@
             }
         }
 
-        // Load DBS lookup data
-        async function loadDBSLookupData() {
-            try {
-                console.log('Loading DBS lookup data...');
-                const data = await fetchFileFromGitHub('DBS.xlsx');
-                
-                const workbook = XLSX.read(data, { type: 'array' });
-                const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-                
-                // Get data from range A2:D250
-                const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, range: 'A2:D250' });
-                
-                // Create lookup object (case insensitive)
-                const lookupData = {};
-                jsonData.forEach(row => {
-                    if (row.length >= 4 && row[0]) {
-                        const villageCode = String(row[0]).trim();
-                        const section = String(row[1] || '').toLowerCase();
-                        const village = String(row[2] || '');
-                        const staff = String(row[3] || '');
-                        
-                        lookupData[villageCode] = {
-                            section: section,
-                            village: village,
-                            staff: staff
-                        };
-                    }
-                });
-                
-                dbsLookupData = lookupData;
-                console.log('DBS lookup data loaded successfully');
-                return lookupData;
-            } catch (error) {
-                console.error('Error loading DBS lookup data:', error);
-                return null;
+        // Function to get cell value safely
+        function getCellValue(row, columnIndex) {
+            if (!row || row.length <= columnIndex) {
+                return '';
             }
+            const value = row[columnIndex];
+            // Handle different value types
+            if (value === null || value === undefined) {
+                return '';
+            }
+            if (typeof value === 'number') {
+                return value.toString();
+            }
+            if (typeof value === 'boolean') {
+                return value ? 'TRUE' : 'FALSE';
+            }
+            return String(value).trim();
         }
 
-        // VLOOKUP function (case insensitive)
-        function vlookup(villageCode) {
-            if (!dbsLookupData || !villageCode) return null;
-            return dbsLookupData[villageCode] || null;
+        // Clean and normalize values
+        function cleanValue(value) {
+            if (!value) return '';
+            return String(value).trim().toUpperCase();
         }
 
-        // Case insensitive section matching
-        function getMatchingSection(sectionFromDBS) {
-            if (!sectionFromDBS) return null;
+        // Normalize category value from Excel (Column F)
+        function normalizeCategory(category) {
+            const cat = cleanValue(category);
             
-            const sectionLower = sectionFromDBS.toLowerCase();
-            // Check for partial matches in our numbered sections
-            for (const defaultSection of defaultSections) {
-                const sectionName = defaultSection.toLowerCase().split(' - ')[1];
-                if (sectionName && sectionName === sectionLower) {
-                    return defaultSection;
+            // Exact match first
+            if (cat === "1.RES") return "1.RES";
+            if (cat === "2.COMM") return "2.COMM";
+            if (cat === "3.IND") return "3.IND";
+            if (cat === "4.AG") return "4.AG";
+            if (cat === "6.PWW") return "6.PWW";
+            if (cat === "7.PUBLIC-SERVICE") return "7.PUBLIC-SERVICE";
+            if (cat === "8.OTHER") return "8.OTHER";
+            
+            // Check for partial matches
+            if (cat.includes("RES")) return "1.RES";
+            if (cat.includes("COMM")) return "2.COMM";
+            if (cat.includes("IND")) return "3.IND";
+            if (cat.includes("AG") && !cat.includes("PWW")) return "4.AG";
+            if (cat.includes("PWW")) return "6.PWW";
+            if (cat.includes("PUBLIC")) return "7.PUBLIC-SERVICE";
+            if (cat.includes("OTHER")) return "8.OTHER";
+            
+            return cat;
+        }
+
+        // Normalize phase value from Excel (Column P)
+        function normalizePhase(phase) {
+            const ph = cleanValue(phase);
+            
+            // Exact match first
+            if (ph === "SINGLE PHASE") return "SINGLE PHASE";
+            if (ph === "THREE PHASE") return "THREE PHASE";
+            
+            // Check for partial matches
+            if (ph.includes("SINGLE")) return "SINGLE PHASE";
+            if (ph.includes("THREE") || ph.includes("3 PHASE")) return "THREE PHASE";
+            
+            return ph;
+        }
+
+        // Normalize infra status from Excel (Column AH)
+        function normalizeInfraStatus(status) {
+            const st = cleanValue(status);
+            
+            // Exact match first
+            if (st === "INFRA REQUIRED") return "INFRA REQUIRED";
+            if (st === "INFRA NOT REQUIRED") return "INFRA NOT REQUIRED";
+            
+            // Check for partial matches
+            if (st.includes("REQUIRED") && !st.includes("NOT REQUIRED")) return "INFRA REQUIRED";
+            if (st.includes("NOT REQUIRED") || (st.includes("REQUIRED") && st.includes("NOT"))) return "INFRA NOT REQUIRED";
+            
+            return st;
+        }
+
+        // Normalize report age from Excel (Column AK)
+        function normalizeReportAge(age) {
+            const ag = cleanValue(age);
+            
+            // Exact match first
+            const exactMatches = [
+                "UPTO 24 HRS",
+                "1 TO 3 DAYS", 
+                "4 TO 7 DAYS",
+                "8 TO 15 DAYS",
+                "16 TO 30 DAYS",
+                "2 TO 3 MONTH",
+                "4 TO 6 MONTH",
+                "7 TO 12 MONTH",
+                "ABOVE 12 MONTH"
+            ];
+            
+            for (const match of exactMatches) {
+                if (ag === match) return match;
+            }
+            
+            // Check for partial matches
+            if (ag.includes("24") || ag.includes("UPTO 24")) return "UPTO 24 HRS";
+            if (ag.includes("1 TO 3") || ag.includes("1-3")) return "1 TO 3 DAYS";
+            if (ag.includes("4 TO 7") || ag.includes("4-7")) return "4 TO 7 DAYS";
+            if (ag.includes("8 TO 15") || ag.includes("8-15")) return "8 TO 15 DAYS";
+            if (ag.includes("16 TO 30") || ag.includes("16-30")) return "16 TO 30 DAYS";
+            if (ag.includes("2 TO 3 MONTH") || ag.includes("2-3 MONTH")) return "2 TO 3 MONTH";
+            if (ag.includes("4 TO 6 MONTH") || ag.includes("4-6 MONTH")) return "4 TO 6 MONTH";
+            if (ag.includes("7 TO 12 MONTH") || ag.includes("7-12 MONTH")) return "7 TO 12 MONTH";
+            if (ag.includes("ABOVE 12") || ag.includes(">12")) return "ABOVE 12 MONTH";
+            
+            return ag;
+        }
+
+        // Check if row matches all current filters
+        function rowMatchesFilters(rowData) {
+            console.log("Checking filters for row:", {
+                infraStatus: rowData.normalizedInfraStatus,
+                category: rowData.normalizedCategory,
+                phase: rowData.normalizedPhase,
+                reportAge: rowData.normalizedReportAge,
+                currentFilters: currentFilters
+            });
+            
+            // Check infra status filter
+            if (currentFilters.infraStatus) {
+                console.log("Infra filter check:", rowData.normalizedInfraStatus, "===", currentFilters.infraStatus, "?", rowData.normalizedInfraStatus === currentFilters.infraStatus);
+                if (rowData.normalizedInfraStatus !== currentFilters.infraStatus) {
+                    return false;
                 }
             }
-            return null;
-        }
-
-        // Determine Infra Status based on TD/PD Date
-        function getInfraStatus(tdPdDate) {
-            if (tdPdDate && String(tdPdDate).trim() !== '') {
-                return "Infra Required";
-            }
-            return "Infra Not Required";
-        }
-
-        // Determine Phase from consumer data
-        function getPhase(consumerData) {
-            // This is a placeholder function
-            // In a real application, you would determine phase from consumer data
-            // For now, we'll return a random phase for demonstration
-            return Math.random() > 0.5 ? "SINGLE PHASE" : "THREE PHASE";
-        }
-
-        // Determine Report Age from Age in Days
-        function getReportAge(ageInDays) {
-            const age = parseFloat(ageInDays) || 0;
             
-            if (age <= 1) return "UPTO 24 HRS";
-            else if (age <= 3) return "1 TO 3 DAYS";
-            else if (age <= 7) return "4 TO 7 DAYS";
-            else if (age <= 15) return "8 TO 15 DAYS";
-            else if (age <= 30) return "16 TO 30 DAYS";
-            else if (age <= 90) return "2 TO 3 MONTH";
-            else if (age <= 180) return "4 TO 6 MONTH";
-            else if (age <= 365) return "7 TO 12 MONTH";
-            else return "ABOVE 12 MONTH";
+            // Check category filter
+            if (currentFilters.category) {
+                console.log("Category filter check:", rowData.normalizedCategory, "===", currentFilters.category, "?", rowData.normalizedCategory === currentFilters.category);
+                if (rowData.normalizedCategory !== currentFilters.category) {
+                    return false;
+                }
+            }
+            
+            // Check phase filter
+            if (currentFilters.phase) {
+                console.log("Phase filter check:", rowData.normalizedPhase, "===", currentFilters.phase, "?", rowData.normalizedPhase === currentFilters.phase);
+                if (rowData.normalizedPhase !== currentFilters.phase) {
+                    return false;
+                }
+            }
+            
+            // Check report age filter
+            if (currentFilters.reportAge) {
+                console.log("Report age filter check:", rowData.normalizedReportAge, "===", currentFilters.reportAge, "?", rowData.normalizedReportAge === currentFilters.reportAge);
+                if (rowData.normalizedReportAge !== currentFilters.reportAge) {
+                    return false;
+                }
+            }
+            
+            console.log("Row passes all filters");
+            return true;
         }
 
         // Process data from Excel file
         function processExcelData(jsonData) {
+            console.log("=== Processing Excel data ===");
+            console.log("Total rows in file:", jsonData.length);
+            
+            if (jsonData.length > 0) {
+                console.log("First row (headers):", jsonData[0]);
+                if (jsonData.length > 1) {
+                    console.log("Second row (sample data):", jsonData[1]);
+                    console.log("Sample data values:");
+                    console.log("  Consumer No (col 0):", getCellValue(jsonData[1], 0));
+                    console.log("  Section (col 2):", getCellValue(jsonData[1], 2));
+                    console.log("  Category (col 5):", getCellValue(jsonData[1], 5));
+                    console.log("  Phase (col 15):", getCellValue(jsonData[1], 15));
+                    console.log("  Stage Tag (col 8):", getCellValue(jsonData[1], 8));
+                    console.log("  Stage Status (col 9):", getCellValue(jsonData[1], 9));
+                    console.log("  Infra Status (col 33):", getCellValue(jsonData[1], 33));
+                    console.log("  Report Age (col 36):", getCellValue(jsonData[1], 36));
+                }
+            }
+            
             const sectionData = {};
             rawData = []; // Reset raw data
             
+            // Reset default sections
+            defaultSections = [];
+
+            // First pass: extract all unique sections from column C
+            const sectionsSet = new Set();
+            
+            for (let i = 1; i < jsonData.length; i++) {
+                const row = jsonData[i];
+                if (!row || row.length === 0) continue;
+                
+                const section = getCellValue(row, excelColumnMapping["Section"]);
+                if (section) {
+                    sectionsSet.add(section);
+                }
+            }
+            
+            // Convert to array and sort
+            defaultSections = Array.from(sectionsSet).sort();
+            console.log("Unique sections found:", defaultSections.length, defaultSections);
+
             // Initialize sections with new structure
             defaultSections.forEach(section => {
                 sectionData[section] = {
@@ -757,100 +877,196 @@
                 };
             });
 
-            // Process each row
+            console.log("Section data initialized for", defaultSections.length, "sections");
+
+            // Second pass: process each row
+            let rowCount = 0;
+            let processedCount = 0;
+            
             for (let i = 1; i < jsonData.length; i++) {
                 const row = jsonData[i];
                 if (!row || row.length === 0) continue;
 
                 try {
-                    // Get consumer number and extract village code (first 5 digits)
-                    const consumerNo = String(row[excelColumnMapping["Consumer No"]] || '');
-                    const villageCode = consumerNo.substring(0, 5);
+                    rowCount++;
                     
-                    // Get sub category, closing balance, age in days, and TD/PD date
-                    const subCategory = String(row[excelColumnMapping["Sub Category"]] || '');
-                    const closingBalance = parseFloat(row[excelColumnMapping["Closing Balance"]] || 0);
-                    const ageInDays = parseFloat(row[excelColumnMapping["Age in Days"]] || 0);
-                    const tdPdDate = row[excelColumnMapping["TD/PD Date"]] || '';
-                    
-                    // Determine infra status, phase, and report age
-                    const infraStatus = getInfraStatus(tdPdDate);
-                    const phase = getPhase(row);
-                    const reportAge = getReportAge(ageInDays);
+                    // Get all required values from the row using the correct column indices
+                    const consumerNo = getCellValue(row, excelColumnMapping["Consumer No"]);
+                    const section = getCellValue(row, excelColumnMapping["Section"]);
+                    const rawCategory = getCellValue(row, excelColumnMapping["Category"]);
+                    const rawPhase = getCellValue(row, excelColumnMapping["Phase"]);
+                    const stageTag = getCellValue(row, excelColumnMapping["Stage Tag"]);
+                    const stageStatus = getCellValue(row, excelColumnMapping["Stage Status"]);
+                    const rawInfraStatus = getCellValue(row, excelColumnMapping["Infra Status"]);
+                    const rawReportAge = getCellValue(row, excelColumnMapping["Report Age"]);
 
-                    // Skip if invalid data
-                    if (!villageCode || !subCategory) continue;
+                    // Normalize values (convert to uppercase for consistent comparison)
+                    const normalizedCategory = normalizeCategory(rawCategory);
+                    const normalizedPhase = normalizePhase(rawPhase);
+                    const normalizedInfraStatus = normalizeInfraStatus(rawInfraStatus);
+                    const normalizedReportAge = normalizeReportAge(rawReportAge);
 
-                    // Get section from DBS lookup
-                    const lookupResult = vlookup(villageCode);
-                    if (!lookupResult || !lookupResult.section) continue;
+                    // Skip if no section
+                    if (!section) {
+                        continue;
+                    }
 
-                    // Match section case insensitively
-                    const section = getMatchingSection(lookupResult.section);
-                    if (!section) continue;
+                    // Skip if section not in our list
+                    if (!defaultSections.includes(section)) {
+                        continue;
+                    }
+
+                    processedCount++;
+
+                    // Debug first few rows
+                    if (processedCount <= 5) {
+                        console.log(`Row ${i} normalized values:`, {
+                            section: section,
+                            rawCategory: rawCategory,
+                            normalizedCategory: normalizedCategory,
+                            rawPhase: rawPhase,
+                            normalizedPhase: normalizedPhase,
+                            rawInfraStatus: rawInfraStatus,
+                            normalizedInfraStatus: normalizedInfraStatus,
+                            rawReportAge: rawReportAge,
+                            normalizedReportAge: normalizedReportAge,
+                            stageTag: stageTag,
+                            stageStatus: stageStatus
+                        });
+                    }
 
                     // Store raw data for filtering
                     rawData.push({
                         section: section,
-                        subCategory: subCategory,
-                        closingBalance: closingBalance,
-                        ageInDays: ageInDays,
-                        infraStatus: infraStatus,
-                        phase: phase,
-                        reportAge: reportAge,
-                        consumerNo: consumerNo
+                        category: rawCategory,
+                        normalizedCategory: normalizedCategory,
+                        phase: rawPhase,
+                        normalizedPhase: normalizedPhase,
+                        infraStatus: rawInfraStatus,
+                        normalizedInfraStatus: normalizedInfraStatus,
+                        reportAge: rawReportAge,
+                        normalizedReportAge: normalizedReportAge,
+                        consumerNo: consumerNo,
+                        stageTag: stageTag,
+                        stageStatus: stageStatus,
+                        rowIndex: i
                     });
 
-                    // Update section data with random distribution for demo
-                    // In real application, this would come from actual data
+                    // Get the section object
                     const sectionObj = sectionData[section];
                     
-                    // Update A1.Stage
-                    if (Math.random() > 0.3) sectionObj["A1.Stage"].submitted += 1;
-                    if (Math.random() > 0.5) sectionObj["A1.Stage"].approved += 1;
+                    // Update counts based on stage tag and status (case-insensitive)
+                    const stageTagUpper = stageTag.toUpperCase();
+                    const stageStatusUpper = stageStatus.toUpperCase();
                     
-                    // Update Tech Feasibility Stage
-                    if (Math.random() > 0.2) sectionObj["TechFeasibility"].saved += 1;
-                    if (Math.random() > 0.4) sectionObj["TechFeasibility"].submitted += 1;
-                    if (Math.random() > 0.6) sectionObj["TechFeasibility"].approved += 1;
-                    
-                    // Update Estimate Stage
-                    if (Math.random() > 0.1) sectionObj["EstimateStage"].saved += 1;
-                    if (Math.random() > 0.3) sectionObj["EstimateStage"].submitted += 1;
-                    if (Math.random() > 0.5) sectionObj["EstimateStage"].verified += 1;
-                    if (Math.random() > 0.7) sectionObj["EstimateStage"].rejected += 1;
-                    if (Math.random() > 0.9) sectionObj["EstimateStage"].approved += 1;
-                    
-                    // Update Receipt Stage
-                    if (Math.random() > 0.3) sectionObj["ReceiptStage"].submitted += 1;
-                    if (Math.random() > 0.5) sectionObj["ReceiptStage"].approved += 1;
-                    
-                    // Update total (sum of all submitted values)
+                    // A1 Stage
+                    if (stageTagUpper.includes("A1") || stageTagUpper.includes("A1.") || stageTagUpper.includes("A1 STAGE")) {
+                        if (stageStatusUpper.includes("SUBMITTED")) {
+                            sectionObj["A1.Stage"].submitted += 1;
+                        } else if (stageStatusUpper.includes("APPROVED")) {
+                            sectionObj["A1.Stage"].approved += 1;
+                        }
+                    } 
+                    // Tech Feasibility Stage
+                    else if (stageTagUpper.includes("TECH") || stageTagUpper.includes("FEASIBILITY") || stageTagUpper.includes("TECH FEASIBILITY")) {
+                        if (stageStatusUpper.includes("SAVED")) {
+                            sectionObj["TechFeasibility"].saved += 1;
+                        } else if (stageStatusUpper.includes("SUBMITTED")) {
+                            sectionObj["TechFeasibility"].submitted += 1;
+                        } else if (stageStatusUpper.includes("APPROVED")) {
+                            sectionObj["TechFeasibility"].approved += 1;
+                        }
+                    }
+                    // Estimate Stage
+                    else if (stageTagUpper.includes("ESTIMATE") || stageTagUpper.includes("ESTIMATE STAGE")) {
+                        if (stageStatusUpper.includes("SAVED")) {
+                            sectionObj["EstimateStage"].saved += 1;
+                        } else if (stageStatusUpper.includes("SUBMITTED")) {
+                            sectionObj["EstimateStage"].submitted += 1;
+                        } else if (stageStatusUpper.includes("VERIFIED")) {
+                            sectionObj["EstimateStage"].verified += 1;
+                        } else if (stageStatusUpper.includes("REJECTED")) {
+                            sectionObj["EstimateStage"].rejected += 1;
+                        } else if (stageStatusUpper.includes("APPROVED")) {
+                            sectionObj["EstimateStage"].approved += 1;
+                        }
+                    }
+                    // Receipt Stage
+                    else if (stageTagUpper.includes("RECEIPT") || stageTagUpper.includes("RECEIPT STAGE")) {
+                        if (stageStatusUpper.includes("SUBMITTED")) {
+                            sectionObj["ReceiptStage"].submitted += 1;
+                        } else if (stageStatusUpper.includes("APPROVED")) {
+                            sectionObj["ReceiptStage"].approved += 1;
+                        }
+                    }
+
+                    // Update total count
                     sectionObj.total += 1;
 
                 } catch (error) {
-                    console.warn('Error processing row:', error);
+                    console.warn('Error processing row', i, ':', error);
                     continue;
                 }
             }
 
+            console.log("Total rows:", rowCount, "Processed rows:", processedCount);
+            console.log("Sample section data (first 3 sections):", 
+                Object.keys(sectionData).slice(0, 3).map(k => ({section: k, data: sectionData[k]}))
+            );
+            
+            // Log unique values found for each filter
+            const uniqueCategories = new Set();
+            const uniquePhases = new Set();
+            const uniqueInfraStatuses = new Set();
+            const uniqueReportAges = new Set();
+            
+            rawData.forEach(row => {
+                uniqueCategories.add(row.normalizedCategory);
+                uniquePhases.add(row.normalizedPhase);
+                uniqueInfraStatuses.add(row.normalizedInfraStatus);
+                uniqueReportAges.add(row.normalizedReportAge);
+            });
+            
+            console.log("Unique normalized Categories:", Array.from(uniqueCategories));
+            console.log("Unique normalized Phases:", Array.from(uniquePhases));
+            console.log("Unique normalized Infra Statuses:", Array.from(uniqueInfraStatuses));
+            console.log("Unique normalized Report Ages:", Array.from(uniqueReportAges));
+            
             return sectionData;
         }
 
         // Apply filters to the table
         function applyFilters() {
-            const infraStatusFilter = document.getElementById('infra-status-filter').value;
-            const categoryFilter = document.getElementById('category-filter').value;
-            const phaseFilter = document.getElementById('phase-filter').value;
-            const reportAgeFilter = document.getElementById('report-age-filter').value;
+            // Get current filter values
+            currentFilters.infraStatus = document.getElementById('infra-status-filter').value.toUpperCase();
+            currentFilters.category = document.getElementById('category-filter').value;
+            currentFilters.phase = document.getElementById('phase-filter').value;
+            currentFilters.reportAge = document.getElementById('report-age-filter').value;
 
-            if (!processedData) {
+            console.log("=== Applying filters ===");
+            console.log("Current filters:", currentFilters);
+
+            if (!processedData || rawData.length === 0) {
                 showNotification('No data available to filter', true);
                 return;
             }
 
+            // Check if any filter is active
+            const isAnyFilterActive = currentFilters.infraStatus || 
+                                     currentFilters.category || 
+                                     currentFilters.phase || 
+                                     currentFilters.reportAge;
+            
+            if (!isAnyFilterActive) {
+                // No filters active, show all data
+                filteredData = null;
+                updateTableWithData(processedData, false);
+                showNotification('No filters selected. Showing all data.');
+                return;
+            }
+
             // Reset filtered data
-            const filteredData = {};
+            filteredData = {};
             
             // Initialize sections for filtered data
             defaultSections.forEach(section => {
@@ -872,74 +1088,98 @@
                 };
             });
 
-            // Apply filters to raw data
+            // Apply filters to raw data and recalculate counts
+            let filteredRowCount = 0;
+            let debugFilteredRows = [];
+            
             rawData.forEach(row => {
-                let includeRow = true;
-
-                // Apply infra status filter
-                if (infraStatusFilter && row.infraStatus !== infraStatusFilter) {
-                    includeRow = false;
-                }
-
-                // Apply category filter
-                if (categoryFilter) {
-                    let rowCategory = null;
-                    if (row.subCategory === "1.Res") rowCategory = "1.RES";
-                    else if (row.subCategory === "2.Com") rowCategory = "2.COMM";
-                    else if (row.subCategory === "3.Ind") rowCategory = "3.IND";
-                    else if (row.subCategory === "4.Ag") rowCategory = "4.AG";
-                    else if (row.subCategory === "6.PWW") rowCategory = "6.PWW";
-                    else if (row.subCategory === "7.Public S") rowCategory = "7.PUBLIC-SERVICE";
-                    else if (row.subCategory === "8.Other") rowCategory = "8.OTHER";
-                    
-                    if (rowCategory !== categoryFilter) {
-                        includeRow = false;
-                    }
-                }
-
-                // Apply phase filter
-                if (phaseFilter && row.phase !== phaseFilter) {
-                    includeRow = false;
-                }
-
-                // Apply report age filter
-                if (reportAgeFilter && row.reportAge !== reportAgeFilter) {
-                    includeRow = false;
-                }
-
-                // If row passes all filters, add to filtered data
-                if (includeRow) {
+                // Check if row matches all current filters
+                if (rowMatchesFilters(row)) {
+                    filteredRowCount++;
                     const section = row.section;
                     const sectionObj = filteredData[section];
                     
-                    // Update data with random distribution for demo
-                    // Update A1.Stage
-                    if (Math.random() > 0.3) sectionObj["A1.Stage"].submitted += 1;
-                    if (Math.random() > 0.5) sectionObj["A1.Stage"].approved += 1;
+                    // Update counts based on stage tag and status (case-insensitive)
+                    const stageTagUpper = row.stageTag.toUpperCase();
+                    const stageStatusUpper = row.stageStatus.toUpperCase();
                     
-                    // Update Tech Feasibility Stage
-                    if (Math.random() > 0.2) sectionObj["TechFeasibility"].saved += 1;
-                    if (Math.random() > 0.4) sectionObj["TechFeasibility"].submitted += 1;
-                    if (Math.random() > 0.6) sectionObj["TechFeasibility"].approved += 1;
-                    
-                    // Update Estimate Stage
-                    if (Math.random() > 0.1) sectionObj["EstimateStage"].saved += 1;
-                    if (Math.random() > 0.3) sectionObj["EstimateStage"].submitted += 1;
-                    if (Math.random() > 0.5) sectionObj["EstimateStage"].verified += 1;
-                    if (Math.random() > 0.7) sectionObj["EstimateStage"].rejected += 1;
-                    if (Math.random() > 0.9) sectionObj["EstimateStage"].approved += 1;
-                    
-                    // Update Receipt Stage
-                    if (Math.random() > 0.3) sectionObj["ReceiptStage"].submitted += 1;
-                    if (Math.random() > 0.5) sectionObj["ReceiptStage"].approved += 1;
-                    
+                    // A1 Stage
+                    if (stageTagUpper.includes("A1") || stageTagUpper.includes("A1.") || stageTagUpper.includes("A1 STAGE")) {
+                        if (stageStatusUpper.includes("SUBMITTED")) {
+                            sectionObj["A1.Stage"].submitted += 1;
+                        } else if (stageStatusUpper.includes("APPROVED")) {
+                            sectionObj["A1.Stage"].approved += 1;
+                        }
+                    } 
+                    // Tech Feasibility Stage
+                    else if (stageTagUpper.includes("TECH") || stageTagUpper.includes("FEASIBILITY") || stageTagUpper.includes("TECH FEASIBILITY")) {
+                        if (stageStatusUpper.includes("SAVED")) {
+                            sectionObj["TechFeasibility"].saved += 1;
+                        } else if (stageStatusUpper.includes("SUBMITTED")) {
+                            sectionObj["TechFeasibility"].submitted += 1;
+                        } else if (stageStatusUpper.includes("APPROVED")) {
+                            sectionObj["TechFeasibility"].approved += 1;
+                        }
+                    }
+                    // Estimate Stage
+                    else if (stageTagUpper.includes("ESTIMATE") || stageTagUpper.includes("ESTIMATE STAGE")) {
+                        if (stageStatusUpper.includes("SAVED")) {
+                            sectionObj["EstimateStage"].saved += 1;
+                        } else if (stageStatusUpper.includes("SUBMITTED")) {
+                            sectionObj["EstimateStage"].submitted += 1;
+                        } else if (stageStatusUpper.includes("VERIFIED")) {
+                            sectionObj["EstimateStage"].verified += 1;
+                        } else if (stageStatusUpper.includes("REJECTED")) {
+                            sectionObj["EstimateStage"].rejected += 1;
+                        } else if (stageStatusUpper.includes("APPROVED")) {
+                            sectionObj["EstimateStage"].approved += 1;
+                        }
+                    }
+                    // Receipt Stage
+                    else if (stageTagUpper.includes("RECEIPT") || stageTagUpper.includes("RECEIPT STAGE")) {
+                        if (stageStatusUpper.includes("SUBMITTED")) {
+                            sectionObj["ReceiptStage"].submitted += 1;
+                        } else if (stageStatusUpper.includes("APPROVED")) {
+                            sectionObj["ReceiptStage"].approved += 1;
+                        }
+                    }
+
                     // Update total
                     sectionObj.total += 1;
+                    
+                    // Store for debugging
+                    if (debugFilteredRows.length < 5) {
+                        debugFilteredRows.push({
+                            rowIndex: row.rowIndex,
+                            section: row.section,
+                            category: row.normalizedCategory,
+                            phase: row.normalizedPhase,
+                            infraStatus: row.normalizedInfraStatus,
+                            reportAge: row.normalizedReportAge
+                        });
+                    }
                 }
             });
 
-            updateTableWithData(filteredData);
-            showNotification(`Filter applied. Data filtered based on criteria.`);
+            console.log("Filtered rows:", filteredRowCount, "out of", rawData.length);
+            console.log("First 5 filtered rows:", debugFilteredRows);
+            
+            // Check if any data passed the filters
+            let hasFilteredData = false;
+            for (const section in filteredData) {
+                if (filteredData[section].total > 0) {
+                    hasFilteredData = true;
+                    break;
+                }
+            }
+            
+            if (hasFilteredData) {
+                updateTableWithData(filteredData, true);
+                showNotification(`Filter applied. Showing ${filteredRowCount} filtered rows.`);
+            } else {
+                updateTableWithData(filteredData, true);
+                showNotification('No data matches the selected filters.', true);
+            }
         }
 
         // Clear all filters
@@ -949,16 +1189,44 @@
             document.getElementById('phase-filter').value = '';
             document.getElementById('report-age-filter').value = '';
 
+            // Reset current filters
+            currentFilters = {
+                infraStatus: '',
+                category: '',
+                phase: '',
+                reportAge: ''
+            };
+
             if (processedData) {
-                updateTableWithData(processedData);
+                filteredData = null;
+                updateTableWithData(processedData, false);
                 showNotification('Filters cleared. Showing all data.');
             }
         }
 
         // Update table with data
-        function updateTableWithData(sectionData) {
+        function updateTableWithData(sectionData, isFiltered = false) {
             const tableBody = document.getElementById('table-body');
             tableBody.innerHTML = '';
+
+            console.log("Updating table with data (filtered:", isFiltered, ")");
+
+            // Determine which data to show
+            const dataToShow = isFiltered ? filteredData : processedData;
+            
+            if (!dataToShow || Object.keys(dataToShow).length === 0) {
+                const emptyRow = document.createElement('tr');
+                const emptyCell = document.createElement('td');
+                emptyCell.colSpan = 14;
+                emptyCell.textContent = isFiltered ? 'No data matches the selected filters.' : 'No data available. Please generate abstract first.';
+                emptyCell.style.textAlign = 'center';
+                emptyCell.style.padding = '20px';
+                emptyCell.style.color = '#999';
+                emptyRow.appendChild(emptyCell);
+                tableBody.appendChild(emptyRow);
+                updateStatusBar(isFiltered);
+                return;
+            }
 
             let grandTotals = {
                 a1Submitted: 0,
@@ -976,12 +1244,18 @@
                 total: 0
             };
 
+            let hasData = false;
+
             // Add sections with data
             defaultSections.forEach(section => {
-                if (!sectionData[section]) return;
+                if (!dataToShow[section] || dataToShow[section].total === 0) {
+                    // Skip sections with no data
+                    return;
+                }
 
+                hasData = true;
                 const row = document.createElement('tr');
-                const sectionObj = sectionData[section];
+                const sectionObj = dataToShow[section];
                 
                 // Section name
                 const sectionCell = document.createElement('td');
@@ -1060,16 +1334,37 @@
                 row.appendChild(recApprovedCell);
                 grandTotals.recApproved += sectionObj["ReceiptStage"].approved;
 
-                // TOTAL - Single column
+                // TOTAL - Sum of all counts
+                const totalValue = sectionObj["A1.Stage"].submitted + sectionObj["A1.Stage"].approved +
+                                 sectionObj["TechFeasibility"].saved + sectionObj["TechFeasibility"].submitted + sectionObj["TechFeasibility"].approved +
+                                 sectionObj["EstimateStage"].saved + sectionObj["EstimateStage"].submitted + sectionObj["EstimateStage"].verified + 
+                                 sectionObj["EstimateStage"].rejected + sectionObj["EstimateStage"].approved +
+                                 sectionObj["ReceiptStage"].submitted + sectionObj["ReceiptStage"].approved;
+                
                 const totalCell = document.createElement('td');
-                totalCell.textContent = sectionObj.total;
+                totalCell.textContent = totalValue;
                 row.appendChild(totalCell);
-                grandTotals.total += sectionObj.total;
+                grandTotals.total += totalValue;
 
                 tableBody.appendChild(row);
             });
 
-            // Add TOTAL row
+            // If no data in any section, show message
+            if (!hasData) {
+                const emptyRow = document.createElement('tr');
+                const emptyCell = document.createElement('td');
+                emptyCell.colSpan = 14;
+                emptyCell.textContent = isFiltered ? 'No data matches the selected filters.' : 'No data available in the selected sections.';
+                emptyCell.style.textAlign = 'center';
+                emptyCell.style.padding = '20px';
+                emptyCell.style.color = '#999';
+                emptyRow.appendChild(emptyCell);
+                tableBody.appendChild(emptyRow);
+                updateStatusBar(isFiltered);
+                return;
+            }
+
+            // Add TOTAL row only if we have data
             const totalRow = document.createElement('tr');
             totalRow.className = 'total-row';
             
@@ -1137,18 +1432,20 @@
             recApprovedTotal.textContent = grandTotals.recApproved;
             totalRow.appendChild(recApprovedTotal);
 
-            // TOTAL - Single column
+            // TOTAL - Sum of all values
             const totalTotal = document.createElement('td');
             totalTotal.textContent = grandTotals.total;
             totalRow.appendChild(totalTotal);
 
             tableBody.appendChild(totalRow);
-            updateStatusBar();
+            updateStatusBar(isFiltered);
         }
 
         // Download abstract as Excel file
         function downloadAbstract() {
-            if (!processedData) {
+            const dataToDownload = filteredData || processedData;
+            
+            if (!dataToDownload) {
                 showNotification('No data available to download', true);
                 return;
             }
@@ -1172,9 +1469,15 @@
 
                 // Add data for each section
                 defaultSections.forEach(section => {
-                    if (!processedData[section]) return;
+                    if (!dataToDownload[section] || dataToDownload[section].total === 0) return;
                     
-                    const sectionObj = processedData[section];
+                    const sectionObj = dataToDownload[section];
+                    const totalValue = sectionObj["A1.Stage"].submitted + sectionObj["A1.Stage"].approved +
+                                     sectionObj["TechFeasibility"].saved + sectionObj["TechFeasibility"].submitted + sectionObj["TechFeasibility"].approved +
+                                     sectionObj["EstimateStage"].saved + sectionObj["EstimateStage"].submitted + sectionObj["EstimateStage"].verified + 
+                                     sectionObj["EstimateStage"].rejected + sectionObj["EstimateStage"].approved +
+                                     sectionObj["ReceiptStage"].submitted + sectionObj["ReceiptStage"].approved;
+                    
                     const row = [
                         section,
                         sectionObj["A1.Stage"].submitted,
@@ -1189,7 +1492,7 @@
                         sectionObj["EstimateStage"].approved,
                         sectionObj["ReceiptStage"].submitted,
                         sectionObj["ReceiptStage"].approved,
-                        sectionObj.total
+                        totalValue
                     ];
                     tableData.push(row);
                 });
@@ -1212,8 +1515,8 @@
                 };
 
                 defaultSections.forEach(section => {
-                    if (!processedData[section]) return;
-                    const sectionObj = processedData[section];
+                    if (!dataToDownload[section] || dataToDownload[section].total === 0) return;
+                    const sectionObj = dataToDownload[section];
                     totals.a1Submitted += sectionObj["A1.Stage"].submitted;
                     totals.a1Approved += sectionObj["A1.Stage"].approved;
                     totals.techSaved += sectionObj["TechFeasibility"].saved;
@@ -1226,7 +1529,11 @@
                     totals.estApproved += sectionObj["EstimateStage"].approved;
                     totals.recSubmitted += sectionObj["ReceiptStage"].submitted;
                     totals.recApproved += sectionObj["ReceiptStage"].approved;
-                    totals.total += sectionObj.total;
+                    totals.total += (sectionObj["A1.Stage"].submitted + sectionObj["A1.Stage"].approved +
+                                   sectionObj["TechFeasibility"].saved + sectionObj["TechFeasibility"].submitted + sectionObj["TechFeasibility"].approved +
+                                   sectionObj["EstimateStage"].saved + sectionObj["EstimateStage"].submitted + sectionObj["EstimateStage"].verified + 
+                                   sectionObj["EstimateStage"].rejected + sectionObj["EstimateStage"].approved +
+                                   sectionObj["ReceiptStage"].submitted + sectionObj["ReceiptStage"].approved);
                 });
 
                 // Add TOTAL row
@@ -1264,7 +1571,7 @@
 
         // Generate list
         function generateList() {
-            if (!processedData) {
+            if (!processedData || rawData.length === 0) {
                 showNotification('No data available to generate list', true);
                 return;
             }
@@ -1280,27 +1587,29 @@
                 listData.push([
                     'Consumer No',
                     'Section',
-                    'Sub Category',
-                    'Closing Balance',
-                    'Age in Days',
-                    'Infra Status',
+                    'Category',
                     'Phase',
-                    'Report Age'
+                    'Infra Status',
+                    'Report Age',
+                    'Stage Tag',
+                    'Stage Status'
                 ]);
 
-                // Add all raw data rows
+                // Apply current filters to raw data
                 rawData.forEach(row => {
-                    const listRow = [
-                        row.consumerNo,
-                        row.section,
-                        row.subCategory,
-                        row.closingBalance,
-                        row.ageInDays,
-                        row.infraStatus,
-                        row.phase,
-                        row.reportAge
-                    ];
-                    listData.push(listRow);
+                    if (rowMatchesFilters(row)) {
+                        const listRow = [
+                            row.consumerNo,
+                            row.section,
+                            row.category,
+                            row.phase,
+                            row.infraStatus,
+                            row.reportAge,
+                            row.stageTag,
+                            row.stageStatus
+                        ];
+                        listData.push(listRow);
+                    }
                 });
 
                 // Create worksheet for detailed list
@@ -1331,25 +1640,23 @@
                 }
 
                 const fileName = `${datePart}.${fileType}`;
+                console.log("Looking for file:", fileName);
 
                 setLoadingState(true);
-                updateProgress(0, 'Fetching data files from GitHub...');
-
-                // Load DBS lookup data first
-                updateProgress(10, 'Loading DBS lookup data...');
-                await loadDBSLookupData();
+                updateProgress(0, 'Fetching data file from GitHub...');
 
                 updateProgress(30, 'Fetching main data file...');
 
-                // Try different date formats and file types
+                // Try different file formats
                 const possibleFileNames = [
                     fileName,
-                    fileName.toLowerCase(),
-                    fileName.replace(/-/g, '_'),
-                    fileName.replace('.xlsx', '.csv'),
-                    fileName.replace('.xls', '.csv'),
-                    fileName.replace('.csv', '.xlsx')
+                    fileName.toUpperCase(),
+                    fileName.replace(/.xlsx$/i, '.xls'),
+                    fileName.replace(/.xls$/i, '.xlsx'),
+                    fileName.replace(/.csv$/i, '.xlsx')
                 ];
+
+                console.log("Trying file names:", possibleFileNames);
 
                 let data = null;
                 let usedFileName = '';
@@ -1361,7 +1668,7 @@
                         console.log(`Successfully loaded ${name}`);
                         break;
                     } catch (error) {
-                        console.warn(`Failed to load ${name}:`, error);
+                        console.warn(`Failed to load ${name}:`, error.message);
                         continue;
                     }
                 }
@@ -1386,10 +1693,15 @@
                     if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
                         throw new Error('Excel file contains no sheets');
                     }
+                    
+                    console.log("Sheet names:", workbook.SheetNames);
+                    
                     const worksheet = workbook.Sheets[workbook.SheetNames[0]];
                     jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
                 }
 
+                console.log("Raw JSON data length:", jsonData.length);
+                
                 if (jsonData.length <= 1) {
                     showNotification('No data found in the file', true);
                     updateImportStatus('No data found');
@@ -1401,17 +1713,32 @@
 
                 // Process the data
                 processedData = processExcelData(jsonData);
+                filteredData = null; // Reset filtered data when loading new data
+                
+                // Reset current filters
+                currentFilters = {
+                    infraStatus: '',
+                    category: '',
+                    phase: '',
+                    reportAge: ''
+                };
+
+                // Clear filter dropdowns
+                document.getElementById('infra-status-filter').value = '';
+                document.getElementById('category-filter').value = '';
+                document.getElementById('phase-filter').value = '';
+                document.getElementById('report-age-filter').value = '';
 
                 setLoadingState(false);
                 updateProgress(100, 'Abstract generated successfully');
 
                 // Update table with processed data
-                updateTableWithData(processedData);
+                updateTableWithData(processedData, false);
 
                 showNotification(`Successfully generated abstract from ${usedFileName}!`);
                 updateImportStatus(`Abstract generated from ${usedFileName}`);
 
-                updateStatusBar();
+                updateStatusBar(false);
 
             } catch (error) {
                 console.error('Error generating abstract:', error);
@@ -1440,8 +1767,8 @@
 
             // Debug help
             console.log('Stagewise Paid Pending Analysis initialized');
-            console.log('Default sections:', defaultSections);
             console.log('GitHub Repo URL:', GITHUB_REPO_URL);
+            console.log('Excel column mapping:', excelColumnMapping);
         });
     </script>
 </body>
