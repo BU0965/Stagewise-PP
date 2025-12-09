@@ -254,6 +254,14 @@
             background-color: #8e44ad;
         }
 
+        #file-management {
+            background-color: #e74c3c;
+        }
+
+        #file-management:hover {
+            background-color: #c0392b;
+        }
+
         .progress-container {
             width: 100%;
             background-color: #ecf0f1;
@@ -441,6 +449,7 @@
                 <button id="generate-abstract">Generate Abstract</button>
                 <button id="download-abstract">Download Abstract</button>
                 <button id="generate-list">Generate List</button>
+                <button id="file-management">File Management</button>
             </div>
         </div>
     </div>
@@ -464,6 +473,9 @@
             phase: '',
             reportAge: ''
         };
+
+        // Store the original Excel data for list generation
+        let originalExcelData = null;
 
         // Excel column mapping for PP_DDMMYYYY.xlsx
         // Note: XLSX uses 0-based indexing
@@ -588,6 +600,7 @@
             const generateButton = document.getElementById('generate-abstract');
             const downloadButton = document.getElementById('download-abstract');
             const generateListButton = document.getElementById('generate-list');
+            const fileManagementButton = document.getElementById('file-management');
             const container = document.querySelector('.container');
 
             if (loading) {
@@ -596,12 +609,14 @@
                 generateButton.textContent = 'Generating...';
                 downloadButton.disabled = true;
                 generateListButton.disabled = true;
+                fileManagementButton.disabled = true;
             } else {
                 container.classList.remove('loading');
                 generateButton.disabled = false;
                 generateButton.textContent = 'Generate Abstract';
                 downloadButton.disabled = false;
                 generateListButton.disabled = false;
+                fileManagementButton.disabled = false;
             }
         }
 
@@ -769,17 +784,8 @@
 
         // Check if row matches all current filters
         function rowMatchesFilters(rowData) {
-            console.log("Checking filters for row:", {
-                infraStatus: rowData.normalizedInfraStatus,
-                category: rowData.normalizedCategory,
-                phase: rowData.normalizedPhase,
-                reportAge: rowData.normalizedReportAge,
-                currentFilters: currentFilters
-            });
-            
             // Check infra status filter
             if (currentFilters.infraStatus) {
-                console.log("Infra filter check:", rowData.normalizedInfraStatus, "===", currentFilters.infraStatus, "?", rowData.normalizedInfraStatus === currentFilters.infraStatus);
                 if (rowData.normalizedInfraStatus !== currentFilters.infraStatus) {
                     return false;
                 }
@@ -787,7 +793,6 @@
             
             // Check category filter
             if (currentFilters.category) {
-                console.log("Category filter check:", rowData.normalizedCategory, "===", currentFilters.category, "?", rowData.normalizedCategory === currentFilters.category);
                 if (rowData.normalizedCategory !== currentFilters.category) {
                     return false;
                 }
@@ -795,7 +800,6 @@
             
             // Check phase filter
             if (currentFilters.phase) {
-                console.log("Phase filter check:", rowData.normalizedPhase, "===", currentFilters.phase, "?", rowData.normalizedPhase === currentFilters.phase);
                 if (rowData.normalizedPhase !== currentFilters.phase) {
                     return false;
                 }
@@ -803,13 +807,11 @@
             
             // Check report age filter
             if (currentFilters.reportAge) {
-                console.log("Report age filter check:", rowData.normalizedReportAge, "===", currentFilters.reportAge, "?", rowData.normalizedReportAge === currentFilters.reportAge);
                 if (rowData.normalizedReportAge !== currentFilters.reportAge) {
                     return false;
                 }
             }
             
-            console.log("Row passes all filters");
             return true;
         }
 
@@ -818,21 +820,8 @@
             console.log("=== Processing Excel data ===");
             console.log("Total rows in file:", jsonData.length);
             
-            if (jsonData.length > 0) {
-                console.log("First row (headers):", jsonData[0]);
-                if (jsonData.length > 1) {
-                    console.log("Second row (sample data):", jsonData[1]);
-                    console.log("Sample data values:");
-                    console.log("  Consumer No (col 0):", getCellValue(jsonData[1], 0));
-                    console.log("  Section (col 2):", getCellValue(jsonData[1], 2));
-                    console.log("  Category (col 5):", getCellValue(jsonData[1], 5));
-                    console.log("  Phase (col 15):", getCellValue(jsonData[1], 15));
-                    console.log("  Stage Tag (col 8):", getCellValue(jsonData[1], 8));
-                    console.log("  Stage Status (col 9):", getCellValue(jsonData[1], 9));
-                    console.log("  Infra Status (col 33):", getCellValue(jsonData[1], 33));
-                    console.log("  Report Age (col 36):", getCellValue(jsonData[1], 36));
-                }
-            }
+            // Store original Excel data for list generation
+            originalExcelData = jsonData;
             
             const sectionData = {};
             rawData = []; // Reset raw data
@@ -918,23 +907,6 @@
 
                     processedCount++;
 
-                    // Debug first few rows
-                    if (processedCount <= 5) {
-                        console.log(`Row ${i} normalized values:`, {
-                            section: section,
-                            rawCategory: rawCategory,
-                            normalizedCategory: normalizedCategory,
-                            rawPhase: rawPhase,
-                            normalizedPhase: normalizedPhase,
-                            rawInfraStatus: rawInfraStatus,
-                            normalizedInfraStatus: normalizedInfraStatus,
-                            rawReportAge: rawReportAge,
-                            normalizedReportAge: normalizedReportAge,
-                            stageTag: stageTag,
-                            stageStatus: stageStatus
-                        });
-                    }
-
                     // Store raw data for filtering
                     rawData.push({
                         section: section,
@@ -949,7 +921,8 @@
                         consumerNo: consumerNo,
                         stageTag: stageTag,
                         stageStatus: stageStatus,
-                        rowIndex: i
+                        rowIndex: i,
+                        originalRow: row // Store the original row data for list generation
                     });
 
                     // Get the section object
@@ -1010,27 +983,6 @@
             }
 
             console.log("Total rows:", rowCount, "Processed rows:", processedCount);
-            console.log("Sample section data (first 3 sections):", 
-                Object.keys(sectionData).slice(0, 3).map(k => ({section: k, data: sectionData[k]}))
-            );
-            
-            // Log unique values found for each filter
-            const uniqueCategories = new Set();
-            const uniquePhases = new Set();
-            const uniqueInfraStatuses = new Set();
-            const uniqueReportAges = new Set();
-            
-            rawData.forEach(row => {
-                uniqueCategories.add(row.normalizedCategory);
-                uniquePhases.add(row.normalizedPhase);
-                uniqueInfraStatuses.add(row.normalizedInfraStatus);
-                uniqueReportAges.add(row.normalizedReportAge);
-            });
-            
-            console.log("Unique normalized Categories:", Array.from(uniqueCategories));
-            console.log("Unique normalized Phases:", Array.from(uniquePhases));
-            console.log("Unique normalized Infra Statuses:", Array.from(uniqueInfraStatuses));
-            console.log("Unique normalized Report Ages:", Array.from(uniqueReportAges));
             
             return sectionData;
         }
@@ -1090,7 +1042,6 @@
 
             // Apply filters to raw data and recalculate counts
             let filteredRowCount = 0;
-            let debugFilteredRows = [];
             
             rawData.forEach(row => {
                 // Check if row matches all current filters
@@ -1146,23 +1097,10 @@
 
                     // Update total
                     sectionObj.total += 1;
-                    
-                    // Store for debugging
-                    if (debugFilteredRows.length < 5) {
-                        debugFilteredRows.push({
-                            rowIndex: row.rowIndex,
-                            section: row.section,
-                            category: row.normalizedCategory,
-                            phase: row.normalizedPhase,
-                            infraStatus: row.normalizedInfraStatus,
-                            reportAge: row.normalizedReportAge
-                        });
-                    }
                 }
             });
 
             console.log("Filtered rows:", filteredRowCount, "out of", rawData.length);
-            console.log("First 5 filtered rows:", debugFilteredRows);
             
             // Check if any data passed the filters
             let hasFilteredData = false;
@@ -1569,7 +1507,7 @@
             }
         }
 
-        // Generate list
+        // Generate list - FIXED VERSION
         function generateList() {
             if (!processedData || rawData.length === 0) {
                 showNotification('No data available to generate list', true);
@@ -1583,32 +1521,33 @@
                 // Prepare detailed list data
                 const listData = [];
                 
-                // Add headers for detailed list
-                listData.push([
-                    'Consumer No',
-                    'Section',
-                    'Category',
-                    'Phase',
-                    'Infra Status',
-                    'Report Age',
-                    'Stage Tag',
-                    'Stage Status'
-                ]);
+                // Add headers for detailed list - using all columns from original Excel
+                const headers = originalExcelData[0] || [];
+                listData.push(headers);
 
-                // Apply current filters to raw data
-                rawData.forEach(row => {
-                    if (rowMatchesFilters(row)) {
-                        const listRow = [
-                            row.consumerNo,
-                            row.section,
-                            row.category,
-                            row.phase,
-                            row.infraStatus,
-                            row.reportAge,
-                            row.stageTag,
-                            row.stageStatus
-                        ];
-                        listData.push(listRow);
+                // Determine which rows to include based on current filters
+                const rowsToInclude = [];
+                
+                if (filteredData) {
+                    // If filters are active, only include rows that match the filters
+                    rawData.forEach(row => {
+                        if (rowMatchesFilters(row)) {
+                            rowsToInclude.push(row.rowIndex);
+                        }
+                    });
+                } else {
+                    // If no filters active, include all rows
+                    for (let i = 1; i < originalExcelData.length; i++) {
+                        rowsToInclude.push(i);
+                    }
+                }
+
+                console.log("Generating list with", rowsToInclude.length, "rows");
+
+                // Add the filtered rows
+                rowsToInclude.forEach(rowIndex => {
+                    if (rowIndex < originalExcelData.length) {
+                        listData.push(originalExcelData[rowIndex]);
                     }
                 });
 
@@ -1620,7 +1559,7 @@
                 const fileName = `detailed_list_${new Date().toISOString().split('T')[0]}.xlsx`;
                 XLSX.writeFile(wb, fileName);
 
-                showNotification('List generated and downloaded successfully!');
+                showNotification(`List generated with ${rowsToInclude.length} rows!`);
             } catch (error) {
                 console.error('List generation error:', error);
                 showNotification('Error generating list: ' + error.message, true);
@@ -1752,6 +1691,11 @@
         document.getElementById('generate-abstract').addEventListener('click', generateAbstract);
         document.getElementById('download-abstract').addEventListener('click', downloadAbstract);
         document.getElementById('generate-list').addEventListener('click', generateList);
+        
+        // File Management button
+        document.getElementById('file-management').addEventListener('click', () => {
+            window.location.href = 'file-management.html';
+        });
 
         document.getElementById('apply-filter').addEventListener('click', applyFilters);
         document.getElementById('clear-filter').addEventListener('click', clearFilters);
